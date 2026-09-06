@@ -1,0 +1,44 @@
+diff --git a/build/src/start/server/metro/instantiateMetro.js b/build/src/start/server/metro/instantiateMetro.js
+--- a/build/src/start/server/metro/instantiateMetro.js
++++ b/build/src/start/server/metro/instantiateMetro.js
+@@ -415,21 +415,25 @@
+         port: (address == null ? void 0 : address.port) ?? null
+     });
+     // Patch transform file to remove inconvenient customTransformOptions which are only used in single well-known files.
+-    const originalTransformFile = metro.getBundler().getBundler().transformFile.bind(metro.getBundler().getBundler());
+-    metro.getBundler().getBundler().transformFile = async function(filePath, transformOptions, fileBuffer) {
+-        return originalTransformFile(filePath, pruneCustomTransformOptions(projectRoot, filePath, // Clone the options so we don't mutate the original.
+-        {
+-            ...transformOptions,
+-            customTransformOptions: {
+-                __proto__: null,
+-                ...transformOptions.customTransformOptions
+-            }
+-        }), fileBuffer);
+-    };
+-    // Layered on top of the prune patch above. Both fresh worker results
+-    // and cache hits flow through `Bundler.transformFile`, so wrapping
+-    // here covers both.
+-    (0, _packedMap().patchTransformFileForPackedMaps)(metro.getBundler().getBundler());
++    // Guarded: inner bundler may not be initialized when waitForBundler:false / isExporting:true
++    const _innerBundler = metro.getBundler() && metro.getBundler().getBundler ? metro.getBundler().getBundler() : null;
++    if (_innerBundler) {
++        const originalTransformFile = _innerBundler.transformFile.bind(_innerBundler);
++        _innerBundler.transformFile = async function(filePath, transformOptions, fileBuffer) {
++            return originalTransformFile(filePath, pruneCustomTransformOptions(projectRoot, filePath, // Clone the options so we don't mutate the original.
++            {
++                ...transformOptions,
++                customTransformOptions: {
++                    __proto__: null,
++                    ...transformOptions.customTransformOptions
++                }
++            }), fileBuffer);
++        };
++        // Layered on top of the prune patch above. Both fresh worker results
++        // and cache hits flow through `Bundler.transformFile`, so wrapping
++        // here covers both.
++        (0, _packedMap().patchTransformFileForPackedMaps)(_innerBundler);
++    }
+     (0, _sourceMap().patchMetroSourceMapStringForPackedMaps)();
+     setEventReporter(eventsSocket.reportMetroEvent);
+     // This function ensures that modules in source maps are sorted in the same

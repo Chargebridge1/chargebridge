@@ -1,0 +1,142 @@
+{
+  "expo": {
+    "name": "ChargeBridge",
+    "slug": "chargebridge-mobile",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "chargebridge-mobile",
+    "userInterfaceStyle": "automatic",
+    "description": "Find, review, and charge at independent EV charging stations near you. Browse community-reported stations, get real-time availability, compare prices, and pay securely in-app.",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.replit.chargebridge",
+      "buildNumber": "214",
+      "deploymentTarget": "17.0",
+      "config": {
+        "googleMapsApiKey": ""
+      },
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": [
+          "audio",
+          "location",
+          "fetch"
+        ],
+        "NSLocationWhenInUseUsageDescription": "ChargeBridge needs your location to find nearby EV charging and gas stations.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "ChargeBridge needs your location for turn-by-turn navigation and to find nearby EV charging and gas stations.",
+        "NSLocationAlwaysUsageDescription": "ChargeBridge uses your location in the background for turn-by-turn navigation.",
+        "NSPhotoLibraryUsageDescription": "ChargeBridge uses your photo library so you can set a custom wallpaper on any tab.",
+        "NSCalendarsUsageDescription": "ChargeBridge reads your calendar to let you navigate to upcoming appointments and meetings that have addresses.",
+        "NSMicrophoneUsageDescription": "ChargeBridge Voice uses your microphone to hear hands-free commands \u2014 microphone is only active while the app is open and you are speaking.",
+        "NSSpeechRecognitionUsageDescription": "ChargeBridge Voice converts your speech to control the app hands-free. All recognition happens on-device and no audio is stored.",
+        "LSApplicationQueriesSchemes": [
+          "chargepoint",
+          "evgo",
+          "blink",
+          "tesla",
+          "electrifyamerica",
+          "volta",
+          "greenlots",
+          "semacharge",
+          "semaconnect",
+          "flo",
+          "clippercreek",
+          "webasto",
+          "shellrecharge",
+          "ampup",
+          "rivian",
+          "ionna",
+          "comgooglemaps",
+          "waze"
+        ]
+      },
+      "entitlements": {
+        "com.apple.developer.associated-domains": [
+          "applinks:chargebridgeapp.com",
+          "applinks:www.chargebridgeapp.com"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.chargebridgeapp.app",
+      "versionCode": 212,
+      "config": {
+        "googleMaps": {
+          "apiKey": ""
+        }
+      },
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#0D9E7E"
+      },
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "INTERNET",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.READ_CALENDAR",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://www.chargebridgeapp.com/"
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#0D9E7E"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      "expo-location",
+      "expo-calendar",
+      "./plugins/withAndroidMaps",
+      "./plugins/withAndroidPackagingOptions",
+      "./plugins/withNoPushEntitlement",
+      "./plugins/withModularHeaders",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "ChargeBridge Voice uses your microphone to hear hands-free commands \u2014 only active while the app is open.",
+          "speechRecognitionPermission": "ChargeBridge Voice converts your speech to control the app hands-free. No audio is stored."
+        }
+      ]
+    ],
+    "updates": {
+      "url": "https://u.expo.dev/22d4532c-5b24-49bf-ac70-0c27ec1265a8",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
+    "runtimeVersion": "1.0.0",
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "22d4532c-5b24-49bf-ac70-0c27ec1265a8"
+      },
+      "easBuildId": "e71e193f-5885-4d98-9a56-f6a2258d634e",
+      "easSubmissionId": "8d02c9b7-615d-4ecc-9498-a033451f33da",
+      "gitCommitShort": "3b44ed8",
+      "gitCommitFull": "3b44ed855562e3f6b4c8f7ad281e58df139c2a65",
+      "gitMessage": "Launch Stabilization \u2014 build 199: onboarding nav fix + custom vehicle escape hatch",
+      "buildStartUTC": "2026-07-23 00:31:11 UTC",
+      "buildEndUTC": ""
+    },
+    "owner": "iblackett"
+  }
+}

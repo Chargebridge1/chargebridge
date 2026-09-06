@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+# pre-push hook — blocks a push when the nav-timing summary is incomplete.
+#
+# NOTE: This file is kept as a reference copy only.
+# The hook that Git actually runs is installed into .git/hooks/pre-push by
+# simple-git-hooks (root package.json postinstall).  The installed hook
+# runs: node artifacts/chargebridge-mobile/scripts/run-nav-timing-gate.cjs
+#
+# To run the check manually:
+#   node artifacts/chargebridge-mobile/scripts/run-nav-timing-gate.cjs
+#
+# ── Confirming the hook is active after a git config reset ──────────────────
+# simple-git-hooks writes to .git/hooks/pre-push directly, but Git honours
+# any core.hooksPath override first.  If a developer has run:
+#   git config core.hooksPath <some-other-dir>          (repo-level)
+#   git config --global core.hooksPath <some-other-dir> (global)
+# …git will look in that directory instead of .git/hooks/ and this hook will
+# be silently skipped on every push.
+#
+# To verify no such override is active:
+#   git config --list --local  | grep hooksPath   # should return nothing
+#   git config --list --global | grep hooksPath   # should return nothing
+#
+# To remove a rogue override:
+#   git config --unset core.hooksPath              # repo-level
+#   git config --global --unset core.hooksPath     # global (only if safe)
+# Then re-run `pnpm install` from the repo root to reinstall the hook.
+# ────────────────────────────────────────────────────────────────────────────
+
+node artifacts/chargebridge-mobile/scripts/run-nav-timing-gate.cjs
+exit $?
