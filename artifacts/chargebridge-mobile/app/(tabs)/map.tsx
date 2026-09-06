@@ -49,7 +49,7 @@ import { navStepThreshold } from "@/utils/navSpeedThreshold";
 import { navOffRouteThreshold } from "@/utils/navOffRouteThreshold";
 import { consumeBgOffRoute } from "@/utils/navOffRouteDetect";
 import { foregroundAdvanceStepIdx, navMissedTurnThreshold } from "@/utils/navStepAdvance";
-import { buildNavZoneLogLine, buildNavSpeakLogLine } from "@/utils/navZoneLog";
+import { buildNavSpeakLogLine } from "@/utils/navZoneLog";
 import { useColors } from "@/hooks/useColors";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { updateCarPlayLocation } from "@/app/carplay/CarPlayService";
@@ -3617,7 +3617,6 @@ function MapScreen() {
                   navModeRef.current === "walking" ? "walking"
                   : navModeRef.current === "cycling" ? "cycling"
                   : "driving";
-                console.log(`[NavRoute][TRACE] bg_offroute_reroute_start loc=${JSON.stringify(_rerouteLoc)}`);
                 fetchAllRoutes(_rerouteLoc, { latitude: dest.latitude, longitude: dest.longitude }, _bgMode, true)
                   .then((results) => {
                     try {
@@ -4073,9 +4072,7 @@ function MapScreen() {
                               :             "In a quarter mile,";
                 const _tZoneA1 = Date.now();
                 navVoiceTraceRef.current = { tZone: _tZoneA1, tSpeak: 0, stepIdx: nextIdx };
-                const _zoneA1Log = buildNavZoneLogLine(steps, curIdx, distToNextM, "a1", routeVersionRef.current, pos.timestamp, _tZoneA1);
                 navDebugZoneRef.current = 'a1';
-                if (_zoneA1Log) console.log(_zoneA1Log);
                 navSpeak(`${distStr} ${steps[nextIdx].instruction}`);
               }
               // a2 — mid-range warning (skipped in quiet mode)
@@ -4093,9 +4090,7 @@ function MapScreen() {
                   :              "In 100 feet,";
                 const _tZoneA2 = Date.now();
                 navVoiceTraceRef.current = { tZone: _tZoneA2, tSpeak: 0, stepIdx: nextIdx };
-                const _zoneA2Log = buildNavZoneLogLine(steps, curIdx, distToNextM, "a2", routeVersionRef.current, pos.timestamp, _tZoneA2);
                 navDebugZoneRef.current = 'a2';
-                if (_zoneA2Log) console.log(_zoneA2Log);
                 navSpeak(`${distStr} ${steps[nextIdx].instruction}`);
               }
               // a3 — near/forced: always plays regardless of quiet mode
@@ -4103,9 +4098,7 @@ function MapScreen() {
                 announced.add("a3");
                 const _tZoneA3 = Date.now();
                 navVoiceTraceRef.current = { tZone: _tZoneA3, tSpeak: 0, stepIdx: nextIdx };
-                const _zoneA3Log = buildNavZoneLogLine(steps, curIdx, distToNextM, "a3", routeVersionRef.current, pos.timestamp, _tZoneA3);
                 navDebugZoneRef.current = 'a3';
-                if (_zoneA3Log) console.log(_zoneA3Log);
                 const evidenceContext = NAV_EVIDENCE_CAPTURE_ENABLED && navEvidenceCaptureRef.current.armed
                   ? {
                       gpsTimestampMs: _gpsTimestampMs,
@@ -4180,7 +4173,6 @@ function MapScreen() {
               const next = _prevStepIdx + 1;
               if (next < steps.length) {
                 const distM = haversineKm(loc, steps[next].coordinate) * 1000;
-                const speedMphSA = Math.round((pos.coords.speed ?? 0) * 2.237);
                 // Step-advance threshold: how close (metres) to the maneuver point
                 // before we flip the banner to the next instruction.  Values are tuned
                 // so the advance happens right as the user reaches/completes the turn
@@ -4199,7 +4191,6 @@ function MapScreen() {
                 // exact production value and an accidental revert to motorised-only is caught.
                 const threshold = navMissedTurnThreshold(pos.coords.speed ?? 0, isWalking, isCycling);
                 if (advancedIdx !== _prevStepIdx) {
-                  console.log(`[NavStep][TRACE] advance stepIdx=${_prevStepIdx}→${next} distM=${Math.round(distM)}m speedMph=${speedMphSA} threshold=${threshold}m`);
                   navState.currentStepIdx = next;
                   setCurrentStepIdx(next);
                   missedTurnRef.current = null; // turn made — clear tracker
