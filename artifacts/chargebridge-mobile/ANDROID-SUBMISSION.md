@@ -21,7 +21,7 @@ Use this runbook to build and submit ChargeBridge to the Google Play internal tr
 ## Step 0 — Verify Play Console app exists
 
 Before submitting, confirm the app is created in [Google Play Console](https://play.google.com/console):
-- Package name: `com.chargebridgeapp.app`
+- Package name: `com.ChargeBridgeApp.myapp`
 - If not yet created: **Create app** → Android → Free → accept policies.
 
 You must upload the first AAB manually via Play Console if the app has never had any release before — Google requires the first upload to be done through the web UI. After that, EAS submit can push subsequent builds automatically.

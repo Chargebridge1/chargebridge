@@ -89,7 +89,7 @@ android {
 
     namespace 'com.chargebridgeapp.app'
     defaultConfig {
-        applicationId 'com.chargebridgeapp.app'
+        applicationId 'com.ChargeBridgeApp.myapp'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 212

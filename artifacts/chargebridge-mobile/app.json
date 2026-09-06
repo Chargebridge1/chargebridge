@@ -59,7 +59,7 @@
       }
     },
     "android": {
-      "package": "com.chargebridgeapp.app",
+      "package": "com.ChargeBridgeApp.myapp",
       "versionCode": 212,
       "config": {
         "googleMaps": {
