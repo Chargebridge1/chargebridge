@@ -1,0 +1,184 @@
+{
+  "manifestVersion": 1,
+  "scope": "phase1b",
+  "historicalNumberGap": "No 0009 migration is defined or implied.",
+  "migrations": [
+    {
+      "order": 1,
+      "id": "phase1b.security-enums-and-tables",
+      "legacyPrefix": "0004",
+      "filename": "0004_phase1b_security_enums_and_tables.sql",
+      "sha256": "4955a740e7f77541faa9ee83fb32342fd818ff52418e5acb8d14b26583fdbd17",
+      "dependsOn": ["base:stations", "base:users"],
+      "transactional": true,
+      "replaySafe": false,
+      "createdTables": [
+        "checkout_email_verifications",
+        "payment_creation_requests",
+        "abuse_rate_limit_buckets",
+        "payment_protocol_observations"
+      ],
+      "createdEnums": [
+        "checkout_verification_status",
+        "payment_request_operation",
+        "payment_request_state",
+        "payment_principal_type",
+        "stripe_object_type",
+        "payment_retention_class",
+        "rate_limit_subject_type"
+      ],
+      "createdIndexes": [
+        "checkout_email_verifications_grant_hash_uq",
+        "checkout_email_verifications_expiry_idx",
+        "checkout_email_verifications_email_recent_idx",
+        "checkout_email_verifications_status_expiry_idx",
+        "checkout_email_verifications_retention_idx",
+        "payment_creation_requests_idempotency_uq",
+        "payment_creation_requests_active_fingerprint_idx",
+        "payment_creation_requests_lease_idx",
+        "payment_creation_requests_retention_idx",
+        "payment_creation_requests_hold_idx",
+        "abuse_rate_limit_buckets_expiry_idx",
+        "abuse_rate_limit_buckets_action_recent_idx",
+        "payment_protocol_observations_adoption_idx",
+        "payment_protocol_observations_installation_idx",
+        "payment_protocol_observations_expiry_idx"
+      ],
+      "createdTriggers": []
+    },
+    {
+      "order": 2,
+      "id": "phase1b.charging-session-request-binding",
+      "legacyPrefix": "0005",
+      "filename": "0005_phase1b_charging_session_request_binding.sql",
+      "sha256": "5c6c5354b15a99ee0d73eeb70d0c7a67ad4b7d147e95d8291e5e21d6ba625652",
+      "dependsOn": [
+        "phase1b.security-enums-and-tables",
+        "base:charging_sessions"
+      ],
+      "transactional": true,
+      "replaySafe": false,
+      "createdTables": [],
+      "createdEnums": [],
+      "createdIndexes": ["charging_sessions_payment_request_uq"],
+      "createdTriggers": [],
+      "alteredColumns": ["charging_sessions.payment_creation_request_id"]
+    },
+    {
+      "order": 3,
+      "id": "phase1b.nonunique-stripe-audit-indexes",
+      "legacyPrefix": "0006",
+      "filename": "0006_phase1b_nonunique_stripe_audit_indexes.sql",
+      "sha256": "958ec5a95e227dbe55c590d796e511bb7f470d35cf59631439ec6acdabeaaf90",
+      "dependsOn": ["base:users", "base:charging_sessions", "base:stripe_refund_jobs"],
+      "transactional": false,
+      "transactionMode": "one-concurrent-index-per-connection",
+      "concurrentExecutionProvenance": "unknown-on-adoption",
+      "replaySafe": false,
+      "createdTables": [],
+      "createdEnums": [],
+      "createdIndexes": [
+        "users_stripe_customer_idx",
+        "charging_sessions_stripe_payment_intent_idx",
+        "stripe_refund_jobs_due_idx"
+      ],
+      "createdTriggers": []
+    },
+    {
+      "order": 4,
+      "id": "phase1b.membership-checkout-reservations",
+      "legacyPrefix": "0007",
+      "filename": "0007_phase1b_membership_checkout_reservations.sql",
+      "sha256": "2966079e95cc5c16355f5faed9303679b1a9f3c04d3d303fc7fd6813564e79f7",
+      "dependsOn": [
+        "phase1b.security-enums-and-tables",
+        "base:users"
+      ],
+      "transactional": true,
+      "replaySafe": false,
+      "createdTables": ["membership_checkout_reservations"],
+      "createdEnums": ["membership_checkout_reservation_state"],
+      "createdIndexes": [
+        "membership_checkout_reservations_idempotency_uq",
+        "membership_checkout_reservations_payment_request_uq",
+        "membership_checkout_reservations_session_uq",
+        "membership_checkout_reservations_user_history_idx",
+        "membership_checkout_reservations_reconcile_idx",
+        "membership_checkout_reservations_retention_idx",
+        "membership_checkout_reservations_one_unresolved_per_user_uq"
+      ],
+      "createdTriggers": []
+    },
+    {
+      "order": 5,
+      "id": "phase1b.subscription-reconciliation-events",
+      "legacyPrefix": "0007",
+      "filename": "0007_phase1b_subscription_reconciliation_events.sql",
+      "sha256": "7c4943be180ecfac8ee18c531ba1af743cc1bd6ecf74b754c5504d2ba7cc7364",
+      "dependsOn": ["base:stripe_events", "base:users"],
+      "transactional": true,
+      "replaySafe": false,
+      "createdTables": ["subscription_reconciliation_events"],
+      "createdEnums": [],
+      "createdIndexes": [
+        "subscription_reconciliation_events_subscription_order_idx",
+        "subscription_reconciliation_events_disposition_idx"
+      ],
+      "createdTriggers": []
+    },
+    {
+      "order": 6,
+      "id": "phase1b.fleet-billing",
+      "legacyPrefix": "0008",
+      "filename": "0008_phase1b_fleet_billing.sql",
+      "sha256": "3710157427eb4b377c4d95f179f8e4ed6be66bf84a09556b5035537f1969caba",
+      "dependsOn": ["base:organizations", "base:users"],
+      "transactional": true,
+      "replaySafe": false,
+      "createdTables": ["fleet_billing_accounts", "fleet_quantity_operations"],
+      "createdEnums": [
+        "fleet_billing_account_state",
+        "fleet_quantity_operation_type",
+        "fleet_quantity_operation_state"
+      ],
+      "createdIndexes": [
+        "fleet_billing_accounts_owner_idx",
+        "fleet_billing_accounts_state_idx",
+        "fleet_quantity_operations_account_created_idx",
+        "fleet_quantity_operations_subscription_state_idx",
+        "fleet_quantity_operations_one_unresolved_per_subscription_uq"
+      ],
+      "createdTriggers": []
+    },
+    {
+      "order": 7,
+      "id": "phase1b.charging-attempts",
+      "legacyPrefix": "0010",
+      "filename": "0010_phase1b_charging_attempts.sql",
+      "sha256": "f3bde885edc4d76ff1b328a469d9a9ddb5795c3ac06c96f1a53b57557f320e78",
+      "dependsOn": [
+        "phase1b.security-enums-and-tables",
+        "phase1b.charging-session-request-binding",
+        "base:stations",
+        "base:charging_sessions"
+      ],
+      "transactional": true,
+      "replaySafe": false,
+      "createdTables": ["charging_attempts"],
+      "createdEnums": [
+        "charging_attempt_state",
+        "charging_attempt_reconciliation_state"
+      ],
+      "createdIndexes": [
+        "charging_attempts_payment_request_uq",
+        "charging_attempts_payment_intent_uq",
+        "charging_attempts_checkout_session_uq",
+        "charging_attempts_equivalent_lookup_idx",
+        "charging_attempts_state_created_idx",
+        "charging_attempts_session_idx"
+      ],
+      "createdTriggers": ["charging_attempts_immutable_quote"],
+      "createdFunctions": ["reject_charging_attempt_quote_mutation"]
+    }
+  ]
+}

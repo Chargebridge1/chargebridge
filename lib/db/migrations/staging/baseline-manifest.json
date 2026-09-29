@@ -1,0 +1,179 @@
+{
+  "manifestVersion": 1,
+  "baselineId": "chargebridge.phase1b.pre-0004",
+  "kind": "fresh-database-schema-snapshot",
+  "target": {
+    "dialect": "postgresql",
+    "schema": "public",
+    "precondition": "The target is a fresh database: its public schema has no application objects."
+  },
+  "baseline": {
+    "filename": "baseline.sql",
+    "sha256": "8579837c6cf352a5bd7c64ecec75356678f0d26abf60f1467739163c0d0ef8f7",
+    "sourceSchemaCommit": "d83aaaacc3beb0540584e220a79648e8647c7247",
+    "approvedPreparationBaselineCommit": "e7846973acf91c10d45fe6b1d6653be3090eacc3",
+    "generator": {
+      "name": "drizzle-kit",
+      "version": "0.31.9",
+      "ormVersion": "0.45.2",
+      "schemaPathAtSourceCommit": "lib/db/src/schema/index.ts",
+      "command": "drizzle-kit generate --name pre0004_baseline",
+      "note": "The 46-table core was generated from the committed schema index at the parent of 0004; the three legacy API-owned table definitions and BUTTON_DEFAULTS seed rows were verified against their existing route bootstrap sources."
+    },
+    "objectCounts": {
+      "tables": 49,
+      "enumTypes": 11,
+      "foreignKeys": 22,
+      "indexesIncludingHistorical0001And0002": 27,
+      "buttonConfigDefaultRows": 26
+    },
+    "tableNames": [
+      "org_memberships",
+      "organizations",
+      "stations",
+      "review_replies",
+      "reviews",
+      "external_station_reviews",
+      "favorites",
+      "invoice_items",
+      "invoices",
+      "charging_sessions",
+      "operator_applications",
+      "users",
+      "charging_history",
+      "gas_station_reviews",
+      "fleet_driver_assignments",
+      "fleet_vehicles",
+      "station_photos",
+      "station_checkins",
+      "saved_trips",
+      "station_status_reports",
+      "user_vehicles",
+      "household_members",
+      "review_logs",
+      "reviewer_access",
+      "ocpi_parties",
+      "ocpi_tokens",
+      "ocpi_tariffs",
+      "ocpi_cdrs",
+      "profile_changelog",
+      "stripe_events",
+      "pricing_audit",
+      "phone_otps",
+      "admin_events",
+      "admin_role_events",
+      "stripe_refund_jobs",
+      "session_events",
+      "ranking_weights",
+      "station_alerts",
+      "ev_catalog",
+      "ev_charging_profiles",
+      "ev_manufacturers",
+      "ev_model_years",
+      "ev_models",
+      "ev_trims",
+      "vehicle_catalog_versions",
+      "connector_affinities",
+      "platform_config",
+      "gas_prices",
+      "button_configs"
+    ],
+    "enumTypeNames": [
+      "org_role",
+      "charger_type",
+      "station_status",
+      "invoice_status",
+      "charging_state",
+      "payment_state",
+      "session_status",
+      "operator_app_status",
+      "vehicle_status",
+      "review_action",
+      "review_entity_type"
+    ],
+    "phase1bManifest": "../phase1b-manifest.json",
+    "phase1bMigrationsBeginWith": "0004_phase1b_security_enums_and_tables.sql",
+    "legacyApiRuntimeObjects": [
+      {
+        "table": "platform_config",
+        "routeFile": "artifacts/api-server/src/routes/pricing.ts",
+        "bootstrapFunction": "ensurePricingTable",
+        "seededRows": 0
+      },
+      {
+        "table": "gas_prices",
+        "routeFile": "artifacts/api-server/src/routes/gasPrices.ts",
+        "bootstrapFunction": "ensureGasPricesTable",
+        "seededRows": 0
+      },
+      {
+        "table": "button_configs",
+        "routeFile": "artifacts/api-server/src/routes/buttonConfigs.ts",
+        "bootstrapFunction": "ensureButtonConfigsTable",
+        "seededRows": 26,
+        "seedSource": "BUTTON_DEFAULTS"
+      }
+    ]
+  },
+  "historicalMigrations": {
+    "receiptTreatment": "schema_effects_incorporated_in_baseline_snapshot; not represented as migration-executed receipts on a newly baselined database",
+    "sourceFilesRemainAuthoritative": true,
+    "entries": [
+      {
+        "order": 1,
+        "id": "phase2b.session-state-machines",
+        "legacyPrefix": "0001",
+        "filename": "0001_phase2b_session_state_machines.sql",
+        "sha256": "68f606fa4a1abae3d01b2ca6dfe0d161b689aa00d82096bf116494cf29becb70",
+        "receiptType": "incorporated-in-baseline-provenance",
+        "incorporatedEffects": [
+          "payment_state",
+          "charging_state",
+          "charging_sessions.payment_state",
+          "charging_sessions.charging_state",
+          "charging_sessions.ocpp_transaction_id",
+          "session_events",
+          "session_events_session_id_idx",
+          "session_events_event_type_idx"
+        ]
+      },
+      {
+        "order": 2,
+        "id": "phase2b.invoice-session-idempotency",
+        "legacyPrefix": "0002",
+        "filename": "0002_invoices_charging_session_unique.sql",
+        "sha256": "c7f0a4aa6bb26e36a80871cd18bcdf6c5ea71d6fc13a4350f4efca0d90f86509",
+        "receiptType": "incorporated-in-baseline-provenance",
+        "incorporatedEffects": [
+          "invoices.charging_session_id",
+          "invoices_charging_session_id_unique"
+        ]
+      },
+      {
+        "order": 3,
+        "id": "vehicle-catalog.user-trim-link",
+        "legacyPrefix": "0003",
+        "filename": "0003_user_vehicles_catalog_trim_id.sql",
+        "sha256": "8a1a87bc1d738896d805ba9781b6d47720d7d72da51c651c7ee580ab63ec56b5",
+        "receiptType": "incorporated-in-baseline-provenance",
+        "incorporatedEffects": [
+          "user_vehicles.catalog_trim_id"
+        ]
+      }
+    ]
+  },
+  "applicationEvidence": {
+    "baselineReceiptId": "chargebridge.phase1b.pre-0004",
+    "phase1bReceiptIds": [
+      "phase1b.security-enums-and-tables",
+      "phase1b.charging-session-request-binding",
+      "phase1b.nonunique-stripe-audit-indexes",
+      "phase1b.membership-checkout-reservations",
+      "phase1b.subscription-reconciliation-events",
+      "phase1b.fleet-billing",
+      "phase1b.charging-attempts"
+    ],
+    "historicalMigrationsAreAppliedReceipts": false,
+    "note": "The baseline marker identifies the snapshot; the seven IDs above identify approved post-baseline migrations. The historicalMigrations.entries array is provenance only and must not be reported as individually executed."
+  }
+}

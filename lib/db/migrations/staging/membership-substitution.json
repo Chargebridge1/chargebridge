@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "status": "verified-test-catalog",
+  "providerVerification": {
+    "status": "passed",
+    "accountId": "acct_1TUeJWDItJjjt34X",
+    "mode": "test",
+    "method": "read-only Stripe API retrieval of account and all six objects",
+    "checked": "exact IDs, livemode=false, active=true, Price.product, unit_amount, currency=usd, recurring month with interval_count=1"
+  },
+  "historicalMigrationId": "phase1b.membership-checkout-reservations",
+  "historicalFilename": "0007_phase1b_membership_checkout_reservations.sql",
+  "replacementFilename": "0007_phase1b_staging_membership_checkout_reservations.sql",
+  "replacementSha256": "bd31df53a5bf611f48b304a171b5a94e34d6cbb092c11264f7de516ce39c4e3d",
+  "catalog": {
+    "driver": { "productId": "prod_VLAnasyvx0Sd6Y", "priceId": "price_1UKURuDItJjjt34XkWG3Uixb" },
+    "family": { "productId": "prod_VLCFqrtcfrxjs6", "priceId": "price_1UKVrQDItJjjt34XCYnQJU0r" },
+    "fleet": { "productId": "prod_VLCDStuTiAIh8i", "priceId": "price_1UKVp7DItJjjt34XWDENhdgz" }
+  }
+}
