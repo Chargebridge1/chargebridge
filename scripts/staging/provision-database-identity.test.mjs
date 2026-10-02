@@ -8,6 +8,21 @@ import { provisionDatabaseIdentity, readProvisioningConfiguration } from "./prov
 const IDENTITY = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const PASSWORD = "UNIT-TEST-ONLY-NOT-A-CREDENTIAL";
 const HOST = "staging-db.example.invalid";
+const SAFE_LOGGING = Object.freeze({
+  log_statement: "none",
+  pgaudit_log: "none",
+  pgaudit_log_parameter: "off",
+  log_duration: "off",
+  log_transaction_sample_rate: "0",
+  log_min_duration_sample: "-1",
+  log_min_error_statement: "error",
+  log_min_duration_statement: "1000",
+  auto_explain_log_min_duration: "-1",
+  // These can remain unlimited. The implementation must never rely on them.
+  log_parameter_max_length: "-1",
+  log_parameter_max_length_on_error: "-1",
+  log_error_verbosity: "default",
+});
 const environment = {
   CHARGEBRIDGE_ENVIRONMENT: "staging",
   CHARGEBRIDGE_STAGING_DB_ID: IDENTITY,
@@ -29,6 +44,9 @@ function mockDatabase({ refuse, throwAt, commitError = false, rollbackError = fa
   closeError = false, connectError = false, insertCount = 1, tls = true,
   authorized = tls, faultAt, refuseAfter, errorValue,
   namespaceState = { path: "pg_catalog", schemas: ["pg_catalog"], temporaryOid: 0 },
+  loggingSettings = {}, markerRows,
+  copyWriteError = false, copySubmitError = false, copyReadyError = false,
+  copyLateResponse = false, copyCompleteText, copyRepeatedResponse = false,
 } = {}) {
   const calls = [];
   const events = {};
@@ -41,8 +59,10 @@ function mockDatabase({ refuse, throwAt, commitError = false, rollbackError = fa
       calls.push({ text: "CONNECT" });
       if (connectError) throw errorValue ?? new Error(`${IDENTITY} ${PASSWORD}`);
     },
-    async query(text, values) {
-      calls.push({ text, values });
+    query(statement, values) {
+      const text = typeof statement === "string" ? statement : statement.text;
+      const call = { text, values };
+      calls.push(call);
       const label = text.match(/\/\* ([a-z-]+) \*\//)?.[1] ?? text;
       if (faultAt === label) events.error(new Error(`${IDENTITY} ${PASSWORD}`));
       if (throwAt === label || (throwAt && text.startsWith(throwAt)) ||
@@ -51,11 +71,50 @@ function mockDatabase({ refuse, throwAt, commitError = false, rollbackError = fa
         if (errorValue !== undefined) throw errorValue;
         const error = new Error(`RAW-DRIVER-ERROR ${IDENTITY} ${PASSWORD} postgres://doadmin:${PASSWORD}@${HOST}`);
         error.detail = `DETAIL ${IDENTITY}`;
+        if (typeof statement !== "string") {
+          statement.handleError(error);
+          return statement;
+        }
         throw error;
       }
-      if (text.startsWith("INSERT")) return { rows: [], rowCount: insertCount };
       const changedPrecondition = refuseAfter?.guard === label &&
         calls.slice(0, -1).some((call) => call.text.startsWith(refuseAfter.statementPrefix));
+      if (label === "logging") {
+        return { rows: [{ ...SAFE_LOGGING, ...loggingSettings,
+          ...(label === refuse || changedPrecondition ? { log_statement: "all" } : {}),
+        }] };
+      }
+      if (label === "marker-identity") {
+        return { rows: markerRows ?? (label === refuse
+          ? [] : [{ identity_bytes: Buffer.from(IDENTITY.replaceAll("-", ""), "hex"), environment: "staging" }]) };
+      }
+      if (typeof statement !== "string") {
+        // Exercise the real Submittable's protocol handlers, never a database.
+        call.copyChunks = [];
+        call.copyDone = false;
+        const connection = {
+          query(sql) {
+            assert.equal(sql, text);
+            if (copySubmitError) throw new Error(`${IDENTITY} ${PASSWORD}`);
+          },
+          sendCopyFromChunk(chunk) {
+            if (copyWriteError) throw new Error(`${IDENTITY} ${PASSWORD}`);
+            call.copyChunks.push(Buffer.from(chunk));
+          },
+          endCopyFrom() { call.copyDone = true; },
+          sendCopyFail(message) { call.copyFailure = message; },
+        };
+        const submitError = statement.submit(connection);
+        if (submitError) statement.handleError(submitError);
+        if (copySubmitError) return statement;
+        if (copyLateResponse) statement.handleError(new Error("Query read timeout"));
+        statement.handleCopyInResponse(connection);
+        if (copyRepeatedResponse) statement.handleCopyInResponse(connection);
+        statement.handleCommandComplete({ text: copyCompleteText ?? `COPY ${insertCount}` });
+        if (copyReadyError) statement.handleError(new Error(`${IDENTITY} ${PASSWORD}`));
+        statement.handleReadyForQuery();
+        return statement;
+      }
       if (label === "namespace") {
         const safe = namespaceState.path === "pg_catalog" &&
           namespaceState.schemas.length === 1 && namespaceState.schemas[0] === "pg_catalog" &&
@@ -158,8 +217,8 @@ test("successful mocked transaction uses verified TLS and a separate fixed doadm
   assert.equal(options.ssl.rejectUnauthorized, true);
   assert.equal(options.ssl.servername, HOST);
   assert.equal(options.ssl.ca, rootCertificates[0]);
-  assert.equal(options.options, "-c search_path=pg_catalog -c log_parameter_max_length=0 " +
-    "-c log_parameter_max_length_on_error=0 -c log_error_verbosity=terse");
+  assert.equal(options.options, "-c search_path=pg_catalog");
+  assert.doesNotMatch(options.options, /log_parameter_max_length|log_error_verbosity/);
   assert.equal(result, "RUNTIME SELECT VERIFIED");
   assert.deepEqual(output, ["TARGET VERIFIED", "PROVISIONER VERIFIED",
     "MARKER CREATED", "MARKER VERIFIED", "RUNTIME SELECT VERIFIED"]);
@@ -168,9 +227,94 @@ test("successful mocked transaction uses verified TLS and a separate fixed doadm
   assert.equal(database.calls.some((call) => call.text === "ROLLBACK"), false);
 });
 
-test("only the marker is mutated, with the approved definition and bound identity", async () => {
+test("active 1000 ms duration logging and unlimited bind limits do not require superuser settings", async () => {
+  const { database, result } = await exercise({}, { loggingSettings: {
+    log_parameter_max_length: "-1",
+    log_parameter_max_length_on_error: "-1",
+    log_error_verbosity: "default",
+  } });
+  assert.equal(result, "RUNTIME SELECT VERIFIED");
+  assert.equal(database.options.options, "-c search_path=pg_catalog");
+  // Even a slow/error statement logger with unlimited parameters sees only
+  // fixed SQL, never the UUID. Protocol-data logging is a separate operator risk.
+  const statementLog = database.calls.map(({ text, values }) => ({ text, values }));
+  assertNonDisclosing(statementLog);
+  assert.equal(statementLog.every(({ values }) => values === undefined), true);
+});
+
+for (const [setting, value] of [
+  ["log_statement", "all"], ["log_statement", "ddl"], ["log_statement", "mod"],
+  ["pgaudit_log", "all"], ["pgaudit_log", "write"],
+  ["pgaudit_log_parameter", "on"], ["log_duration", "on"],
+  ["log_transaction_sample_rate", "0.1"], ["log_min_duration_sample", "0"],
+  ["log_min_error_statement", "warning"], ["log_min_error_statement", "log"],
+  ["log_min_duration_statement", "0"], ["log_min_duration_statement", "999"],
+  ["log_min_duration_statement", "1001"], ["log_min_duration_statement", "1s"],
+  ["auto_explain_log_min_duration", "0"],
+  ...Object.keys(SAFE_LOGGING).filter((key) =>
+    !["log_parameter_max_length", "log_parameter_max_length_on_error", "log_error_verbosity"].includes(key))
+    .map((key) => [key, undefined]),
+]) {
+  test(`logging gate refuses unapproved/missing ${setting}=${String(value)} before DDL or COPY`, async () => {
+    const { database, result, output } = await exercise({}, { loggingSettings: { [setting]: value } });
+    assert.equal(result, "FAILED / SAFETY CHECK REFUSED");
+    assert.equal(database.calls.some(({ text }) => /^(CREATE|COPY|REVOKE|GRANT)/.test(text)), false);
+    assert.equal(database.calls.some(({ text }) => text === "ROLLBACK"), true);
+    assert.equal(database.calls.some(({ text }) => text === "COMMIT"), false);
+    assert.equal(output.includes("MARKER CREATED"), false);
+  });
+}
+
+for (const behavior of [
+  { copySubmitError: true }, { copyWriteError: true }, { copyReadyError: true },
+  { copyLateResponse: true }, { copyRepeatedResponse: true },
+  { copyCompleteText: "INSERT 0 1" }, { insertCount: 2 },
+]) {
+  test(`COPY protocol failure ${Object.keys(behavior)[0]} rolls back without success or unsafe fallback`, async () => {
+    const { database, result, output } = await exercise({}, behavior);
+    assert.equal(result, "FAILED");
+    assert.equal(output.includes("FAILED / ROLLED BACK"), true);
+    assert.equal(output.includes("MARKER CREATED"), false);
+    assert.equal(database.calls.some(({ text }) => text === "COMMIT"), false);
+    assert.equal(database.calls.some(({ text }) => /^INSERT|FORMAT (?:text|csv)/i.test(text)), false);
+    const copy = database.calls.find(({ text }) => text.startsWith("COPY"));
+    if (behavior.copyLateResponse) {
+      assert.equal(copy.copyChunks.length, 0);
+      assert.equal(copy.copyFailure, "FAILED");
+    }
+    if (behavior.copyWriteError || behavior.copyRepeatedResponse) {
+      assert.equal(copy.copyFailure, "FAILED");
+    }
+    if (behavior.copyRepeatedResponse) assert.equal(copy.copyChunks.length, 1);
+  });
+}
+
+for (const [name, markerRows] of [
+  ["no row", []],
+  ["multiple rows", [
+    { identity_bytes: Buffer.from(IDENTITY.replaceAll("-", ""), "hex"), environment: "staging" },
+    { identity_bytes: Buffer.from(IDENTITY.replaceAll("-", ""), "hex"), environment: "staging" },
+  ]],
+  ["wrong environment", [
+    { identity_bytes: Buffer.from(IDENTITY.replaceAll("-", ""), "hex"), environment: "production" },
+  ]],
+  ["wrong identity", [{ identity_bytes: Buffer.alloc(16), environment: "staging" }]],
+  ["text instead of binary", [{ identity_bytes: IDENTITY, environment: "staging" }]],
+  ["missing identity", [{ environment: "staging" }]],
+]) {
+  test(`in-memory runtime identity check refuses ${name} and rolls back`, async () => {
+    const { database, result, output } = await exercise({}, { markerRows });
+    assert.equal(result, "FAILED");
+    assert.equal(output.includes("FAILED / ROLLED BACK"), true);
+    assert.equal(output.includes("MARKER VERIFIED"), false);
+    assert.equal(database.calls.some(({ text }) => text === "COMMIT"), false);
+    assert.equal(database.calls.every(({ values }) => values === undefined), true);
+  });
+}
+
+test("only the marker is mutated, with the approved definition and binary COPY identity", async () => {
   const { database } = await exercise();
-  const mutations = database.calls.filter(({ text }) => /^(CREATE|INSERT|REVOKE|GRANT)/.test(text));
+  const mutations = database.calls.filter(({ text }) => /^(CREATE|COPY|REVOKE|GRANT)/.test(text));
   assert.equal(mutations.length, 4);
   assert.match(mutations[0].text, /^CREATE TABLE public\.chargebridge_database_identity/);
   assert.match(mutations[0].text, /identity_id pg_catalog\.uuid PRIMARY KEY/);
@@ -180,10 +324,24 @@ test("only the marker is mutated, with the approved definition and bound identit
     assert.match(call.text, /public\.chargebridge_database_identity/);
     assertNonDisclosing(call.text);
   }
-  assert.match(mutations[1].text, /VALUES \(\$1::pg_catalog\.uuid, 'staging'::pg_catalog\.text\)/);
-  assert.equal(mutations[1].values.length, 1);
-  // Boolean assertion avoids including a fixture identity in assertion output.
-  assert.equal(mutations[1].values[0] === IDENTITY, true);
+  assert.match(mutations[1].text, /^COPY public\.chargebridge_database_identity \(identity_id, environment\)/);
+  assert.match(mutations[1].text, /FROM STDIN WITH \(FORMAT binary\)/);
+  assert.equal(mutations[1].values, undefined);
+  assert.equal(mutations[1].copyDone, true);
+  assert.equal(mutations[1].copyChunks.length, 1);
+  const payload = mutations[1].copyChunks[0];
+  assert.equal(payload.length, 54);
+  assert.equal(payload.subarray(0, 11).equals(Buffer.from("5047434f50590aff0d0a00", "hex")), true);
+  assert.equal(payload.readInt32BE(11), 0);
+  assert.equal(payload.readInt32BE(15), 0);
+  assert.equal(payload.readInt16BE(19), 2);
+  assert.equal(payload.readInt32BE(21), 16);
+  assert.equal(payload.subarray(25, 41).equals(Buffer.from(IDENTITY.replaceAll("-", ""), "hex")), true);
+  assert.equal(payload.readInt32BE(41), 7);
+  assert.equal(payload.subarray(45, 52).toString(), "staging");
+  assert.equal(payload.readInt16BE(52), -1);
+  assert.equal(database.calls.every(({ values }) => values === undefined), true);
+  assert.equal(database.calls.some(({ text }) => /\$[0-9]+/.test(text)), false);
   assert.match(mutations[2].text, /FROM PUBLIC, chargebridge_staging_runtime/);
   assert.match(mutations[3].text, /^GRANT SELECT ON TABLE/);
   assert.equal(database.calls.some(({ text }) =>
@@ -204,12 +362,9 @@ test("runtime switch is proved before CREATE and runtime verification precedes C
   assert.equal(texts.slice(createIndex, verificationIndex).includes("SET LOCAL ROLE chargebridge_staging_runtime"), true);
   assert.equal(verificationIndex < texts.indexOf("COMMIT"), true);
   const comparison = database.calls[verificationIndex];
-  assert.match(comparison.text, /pg_catalog\.count\(\*\) OPERATOR\(pg_catalog\.=\) 1/);
-  assert.match(comparison.text, /pg_catalog\.bool_and\(/);
-  assert.match(comparison.text, /identity_id OPERATOR\(pg_catalog\.=\) \$1::pg_catalog\.uuid/);
-  assert.match(comparison.text, /environment OPERATOR\(pg_catalog\.=\) 'staging'::pg_catalog\.text/);
-  assert.match(comparison.text, /AS ok/);
-  assert.equal(comparison.values[0] === IDENTITY, true);
+  assert.match(comparison.text, /pg_catalog\.uuid_send\(identity_id\) AS identity_bytes/);
+  assert.match(comparison.text, /FROM public\.chargebridge_database_identity/);
+  assert.equal(comparison.values, undefined);
 });
 
 for (const [label, expected] of [
@@ -224,7 +379,7 @@ for (const [label, expected] of [
   test(`failed ${label} stops before marker creation and rolls back`, async () => {
     const { database, output, result } = await exercise({}, { refuse: label });
     assert.equal(result, expected);
-    assert.equal(database.calls.some(({ text }) => /^(CREATE|INSERT|REVOKE|GRANT)/.test(text)), false);
+    assert.equal(database.calls.some(({ text }) => /^(CREATE|COPY|REVOKE|GRANT)/.test(text)), false);
     assert.equal(database.calls.some(({ text }) => text === "ROLLBACK"), true);
     assert.equal(database.calls.some(({ text }) => text === "COMMIT"), false);
     assert.equal(output.includes("MARKER CREATED"), false);
@@ -264,7 +419,7 @@ test("a racing external CREATE failure is not retried, accepted, or repaired", a
     throwAt: "CREATE TABLE",
   });
   assert.equal(database.calls.filter(({ text }) => text.startsWith("CREATE TABLE")).length, 1);
-  assert.equal(database.calls.some(({ text }) => text.startsWith("INSERT")), false);
+  assert.equal(database.calls.some(({ text }) => text.startsWith("COPY")), false);
   assert.equal(database.calls.some(({ text }) => text === "COMMIT"), false);
   assert.equal(output.includes("FAILED / ROLLED BACK"), true);
 });
@@ -281,7 +436,7 @@ for (const label of ["marker-structure", "effective-permissions", "marker-identi
   });
 }
 
-test("incorrect insert count rolls back", async () => {
+test("incorrect COPY row count rolls back", async () => {
   const { database, output } = await exercise({}, { insertCount: 0 });
   assert.equal(database.calls.some(({ text }) => text === "COMMIT"), false);
   assert.equal(output.includes("FAILED / ROLLED BACK"), true);
@@ -320,8 +475,9 @@ test("driver error events are handled and stop the operation", async () => {
 
 test("identity inputs are normalized only internally", async () => {
   const { database } = await exercise({ CHARGEBRIDGE_STAGING_DB_ID: IDENTITY.toUpperCase() });
-  const insert = database.calls.find(({ text }) => text.startsWith("INSERT"));
-  assert.equal(insert.values[0] === IDENTITY, true);
+  const copy = database.calls.find(({ text }) => text.startsWith("COPY"));
+  assert.equal(copy.copyChunks[0].subarray(25, 41)
+    .equals(Buffer.from(IDENTITY.replaceAll("-", ""), "hex")), true);
 });
 
 test("SQL checks effective inherited/assumable permissions, ownership and DDL capabilities", async () => {
@@ -357,7 +513,7 @@ for (const [name, namespaceState] of [
     assert.equal(result, "FAILED / NAMESPACE REFUSED");
     assert.equal(database.calls.some(({ text }) => text === "BEGIN"), false);
     assert.equal(database.calls.some(({ values }) => values !== undefined), false);
-    assert.equal(database.calls.some(({ text }) => /^(CREATE|INSERT|REVOKE|GRANT)/.test(text)), false);
+    assert.equal(database.calls.some(({ text }) => /^(CREATE|COPY|REVOKE|GRANT)/.test(text)), false);
     assert.equal(output.includes("MARKER CREATED"), false);
     assert.equal(database.ended, true);
   });
@@ -377,7 +533,7 @@ for (const statementPrefix of [
     assert.equal(output.includes("FAILED / ROLLED BACK"), true);
     assert.equal(output.includes("MARKER CREATED"), false);
     if (statementPrefix === "CREATE TABLE") {
-      assert.equal(database.calls.some(({ text }) => text.startsWith("INSERT")), false);
+      assert.equal(database.calls.some(({ text }) => text.startsWith("COPY")), false);
     }
   });
 }
@@ -397,11 +553,11 @@ test("a fully qualified namespace check runs first and explicit transaction pinn
 test("catalogs, functions, casts, type resolution and operators are explicitly trusted", async () => {
   const { database } = await exercise();
   const statements = database.calls.map(({ text }) => text)
-    .filter((text) => text.startsWith("/*") || text.startsWith("CREATE") || text.startsWith("INSERT"));
+    .filter((text) => text.startsWith("/*") || text.startsWith("CREATE") || text.startsWith("COPY"));
   const functions = ["current_setting", "current_database", "current_schemas", "pg_my_temp_schema",
     "pg_is_in_recovery", "has_schema_privilege", "has_database_privilege", "pg_has_role",
     "pg_try_advisory_xact_lock", "to_regclass", "aclexplode", "acldefault", "count", "bool_and",
-    "has_table_privilege", "has_any_column_privilege"];
+    "has_table_privilege", "has_any_column_privilege", "uuid_send"];
   for (const statement of statements) {
     for (const name of functions) {
       assert.doesNotMatch(statement, new RegExp(`(?<!pg_catalog\\.)\\b${name}\\s*\\(`, "i"));
@@ -422,7 +578,7 @@ test("catalogs, functions, casts, type resolution and operators are explicitly t
   assert.match(structure, /'doadmin'::pg_catalog\.regrole/);
 });
 
-for (const statementPrefix of ["CREATE TABLE", "INSERT INTO", "REVOKE ALL", "GRANT SELECT"]) {
+for (const statementPrefix of ["CREATE TABLE", "COPY public.", "REVOKE ALL", "GRANT SELECT"]) {
   test(`new event trigger detected after ${statementPrefix} stops remaining work and commit`, async () => {
     const { database, output, result } = await exercise({}, {
       refuseAfter: { guard: "event-triggers", statementPrefix },
@@ -432,7 +588,7 @@ for (const statementPrefix of ["CREATE TABLE", "INSERT INTO", "REVOKE ALL", "GRA
     assert.equal(database.calls.some(({ text }) => text === "COMMIT"), false);
     assert.equal(output.includes("MARKER CREATED"), false);
     if (statementPrefix === "CREATE TABLE") {
-      assert.equal(database.calls.some(({ text }) => text.startsWith("INSERT")), false);
+      assert.equal(database.calls.some(({ text }) => text.startsWith("COPY")), false);
     }
   });
 }
@@ -448,7 +604,7 @@ test("every marker mutation and COMMIT rechecks event triggers and logging", asy
   const { database } = await exercise();
   const calls = database.calls;
   for (let index = 0; index < calls.length; index++) {
-    if (/^(CREATE|INSERT|REVOKE|GRANT)/.test(calls[index].text) || calls[index].text === "COMMIT") {
+    if (/^(CREATE|COPY|REVOKE|GRANT)/.test(calls[index].text) || calls[index].text === "COMMIT") {
       assert.equal(calls[index - 3].text.startsWith("/* event-triggers */"), true);
       assert.equal(calls[index - 2].text.startsWith("/* logging */"), true);
       assert.equal(calls[index - 1].text.startsWith("/* namespace */"), true);
@@ -475,21 +631,29 @@ for (const statementPrefix of ["CREATE TABLE", "GRANT SELECT"]) {
   });
 }
 
-test("UUID-bearing queries recheck parameter/DETAIL logging safeguards", async () => {
+test("COPY and UUID verification recheck provider-compatible logging safeguards", async () => {
   const { database } = await exercise();
   for (let index = 0; index < database.calls.length; index++) {
-    if (database.calls[index].values) {
+    if (database.calls[index].text.startsWith("COPY") ||
+        database.calls[index].text.startsWith("/* marker-identity */")) {
       assert.equal(database.calls[index - 2].text.startsWith("/* logging */"), true);
       assert.equal(database.calls[index - 1].text.startsWith("/* namespace */"), true);
       assertNonDisclosing(database.calls[index].text);
     }
   }
   const logging = database.calls.find(({ text }) => text.startsWith("/* logging */")).text;
-  assert.match(logging, /current_setting\('log_error_verbosity'\).*'terse'/);
-  assert.match(logging, /log_parameter_max_length_on_error/);
+  for (const setting of ["log_statement", "pgaudit.log", "pgaudit.log_parameter",
+    "log_duration", "log_transaction_sample_rate", "log_min_duration_sample",
+    "log_min_error_statement", "auto_explain.log_min_duration"]) {
+    assert.equal(logging.includes(`current_setting('${setting}'`), true);
+  }
+  assert.match(logging, /FROM pg_catalog\.pg_settings/);
+  assert.match(logging, /'log_min_duration_statement'::pg_catalog\.text/);
+  assert.match(logging, /unit OPERATOR\(pg_catalog\.=\) 'ms'/);
+  assert.doesNotMatch(logging, /log_parameter_max_length|log_error_verbosity/);
 });
 
-for (const phase of ["connect", "CREATE TABLE", "INSERT INTO", "marker-identity", "COMMIT", "ROLLBACK"]) {
+for (const phase of ["connect", "CREATE TABLE", "COPY public.", "marker-identity", "COMMIT", "ROLLBACK"]) {
   test(`PostgreSQL primary/DETAIL/HINT/CONTEXT/stack secrets at ${phase} never reach actual output`, async (t) => {
     const error = new Error(`ERROR: synthetic failed row ${IDENTITY} credential ${PASSWORD}`);
     Object.assign(error, {
@@ -528,10 +692,10 @@ test("unexpected thrown values or sensitive error getters are not serialized", a
   for (const field of ["message", "detail", "stack", "status"]) {
     Object.defineProperty(error, field, { get() { reads++; throw new Error(PASSWORD); } });
   }
-  const { result } = await exercise({}, { throwAt: "INSERT INTO", errorValue: error });
+  const { result } = await exercise({}, { throwAt: "COPY public.", errorValue: error });
   assert.equal(result, "FAILED");
   assert.equal(reads, 0);
-  const raw = await exercise({}, { throwAt: "INSERT INTO", errorValue: `${IDENTITY} ${PASSWORD}` });
+  const raw = await exercise({}, { throwAt: "COPY public.", errorValue: `${IDENTITY} ${PASSWORD}` });
   assert.equal(raw.result, "FAILED");
 });
 
@@ -541,7 +705,7 @@ test("even an internal refusal with a corrupted status cannot return a secret", 
     try { readProvisioningConfiguration(); } catch (error) { refusal = error; }
   });
   refusal.status = PASSWORD;
-  const { result } = await exercise({}, { throwAt: "INSERT INTO", errorValue: refusal });
+  const { result } = await exercise({}, { throwAt: "COPY public.", errorValue: refusal });
   assert.equal(result, "FAILED");
 });
 
@@ -551,7 +715,10 @@ test("operator documentation does not promise independent DBA or absolute backen
   assert.match(source, /coordinates cooperating provisioners only/);
   assert.match(source, /cannot prevent an independent DBA/);
   assert.match(source, /primary error messages, third-party/);
-  assert.match(source, /never grant[\s\S]*extra privileges or weaken logging checks/);
+  assert.match(source, /never grant extra privileges[\s\S]*or weaken logging checks/);
+  assert.match(source, /do NOT suppress[\s\S]*bind-parameter logging/);
+  assert.match(source, /log_parameter_max_length=-1 is outside our control/);
+  assert.match(source, /binary COPY error context omits row\/column values/);
 });
 
 test("standalone module has no application/migration imports and is guarded against automatic execution", () => {

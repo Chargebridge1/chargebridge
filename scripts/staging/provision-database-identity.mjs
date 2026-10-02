@@ -19,16 +19,20 @@ import { fileURLToPath } from "node:url";
 // metadata, not inferred from it. No secret/configuration is populated here.
 //
 // REQUIRED OPERATOR SAFEGUARDS BEFORE ANY APPROVED EXECUTION:
-// - Review PostgreSQL/provider/proxy/instrumentation logging. Bind suppression
-//   and TERSE reduce backend disclosure, but primary error messages, third-party
-//   logging, process inspection and memory dumps are not controlled by this tool.
+// - Review PostgreSQL/provider/proxy/instrumentation logging. We do NOT suppress
+//   bind-parameter logging: log_parameter_max_length=-1 is outside our control.
+//   The UUID travels only in binary COPY data, never SQL text or bind parameters.
+//   PostgreSQL 16 binary COPY error context omits row/column values, unlike text
+//   COPY. Only one validated row enters our freshly created, transaction-locked
+//   table, so its fixed constraints cannot produce a duplicate/invalid-row error.
+//   Arbitrary primary error messages, third-party logging of protocol data,
+//   process inspection and memory dumps are not controlled by this tool.
 // - Arrange a controlled window with no unrelated privileged DDL. The advisory
 //   lock coordinates cooperating provisioners only. Repeated event-trigger and
 //   namespace checks cannot prevent an independent DBA from changing state
 //   between a check and a statement. No event trigger or role grant is added.
-// - Existing permission to set log_error_verbosity must be available. If the
-//   server rejects this session setting, connection fails closed; never grant
-//   extra privileges or weaken logging checks to get the tool to run.
+// - The provider-compatible logging gate must pass; never grant extra privileges
+//   or weaken logging checks to get the tool to run. No logging GUC is changed.
 const DATABASE = "chargebridge_staging";
 const PROVISIONER = "doadmin";
 const RUNTIME = "chargebridge_staging_runtime";
@@ -54,6 +58,98 @@ class Refusal extends Error {
 function requireTrue(result, status) {
   if (result?.rows?.length !== 1 || result.rows[0].ok !== true) {
     throw new Refusal(status);
+  }
+}
+
+function requireLoggingSafety(result) {
+  // Pin the independently reviewed staging configuration, including its active
+  // 1000 ms slow-statement logger. This is NOT evidence of bind suppression.
+  const expected = {
+    log_statement: "none",
+    pgaudit_log: "none",
+    pgaudit_log_parameter: "off",
+    log_duration: "off",
+    log_transaction_sample_rate: "0",
+    log_min_duration_sample: "-1",
+    log_min_error_statement: "error",
+    log_min_duration_statement: "1000",
+    auto_explain_log_min_duration: "-1",
+  };
+  if (result?.rows?.length !== 1 ||
+      Object.entries(expected).some(([key, value]) => result.rows[0][key] !== value)) {
+    throw new Refusal("FAILED / SAFETY CHECK REFUSED");
+  }
+}
+
+// node-postgres's supported Submittable query interface. Send a simple COPY
+// command, then CopyData/CopyDone; never Parse/Bind, CSV, text COPY or SQL literals.
+// No application code, extra dependency, server function or grant is involved.
+class BinaryIdentityCopy {
+  #payload;
+  #settled = false;
+  #sent = false;
+  #rowCount;
+
+  constructor(identity, callback) {
+    this.text = SQL.copy;
+    this.callback = callback;
+    // PostgreSQL binary COPY: signature, zero flags/extension, two fields,
+    // 16-byte uuid, seven-byte text "staging", and the -1 tuple trailer.
+    this.#payload = Buffer.alloc(54);
+    Buffer.from("5047434f50590aff0d0a00", "hex").copy(this.#payload);
+    this.#payload.writeInt16BE(2, 19);
+    this.#payload.writeInt32BE(16, 21);
+    Buffer.from(identity.replaceAll("-", ""), "hex").copy(this.#payload, 25);
+    this.#payload.writeInt32BE(7, 41);
+    this.#payload.write("staging", 45, "utf8");
+    this.#payload.writeInt16BE(-1, 52);
+  }
+
+  submit(connection) {
+    try { connection.query(this.text); } catch {
+      // Returning an error lets pg restore its queue's ready state as well.
+      return new Refusal("FAILED");
+    }
+  }
+
+  handleCopyInResponse(connection) {
+    if (this.#settled || this.#sent) {
+      // A client timeout before CopyInResponse must not send the secret later.
+      try { connection.sendCopyFail("FAILED"); } catch { /* fixed failure only */ }
+      if (!this.#settled) this.handleError(new Refusal("FAILED"));
+      return;
+    }
+    this.#sent = true;
+    try {
+      connection.sendCopyFromChunk(this.#payload);
+      connection.endCopyFrom();
+    } catch {
+      try { connection.sendCopyFail("FAILED"); } catch { /* fixed failure only */ }
+      this.handleError(new Refusal("FAILED"));
+    }
+  }
+
+  handleCommandComplete(message) {
+    const count = /^COPY ([0-9]+)$/.exec(message.text);
+    this.#rowCount = count ? Number(count[1]) : undefined;
+  }
+
+  handleError(error) {
+    if (this.#settled) return;
+    this.#settled = true;
+    this.#payload.fill(0);
+    this.callback(error);
+  }
+
+  handleReadyForQuery() {
+    if (this.#settled) return;
+    if (this.#rowCount !== 1) {
+      this.handleError(new Refusal("FAILED"));
+      return;
+    }
+    this.#settled = true;
+    this.#payload.fill(0);
+    this.callback(null, { rows: [], rowCount: this.#rowCount });
   }
 }
 
@@ -128,14 +224,20 @@ const SQL = Object.freeze({
       AND pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 170000
       AND pg_catalog.current_setting('transaction_read_only') OPERATOR(pg_catalog.=) 'off'::pg_catalog.text AS ok`,
   logging: `/* logging */
-    SELECT pg_catalog.current_setting('log_parameter_max_length') OPERATOR(pg_catalog.=) '0'::pg_catalog.text
-      AND pg_catalog.current_setting('log_parameter_max_length_on_error') OPERATOR(pg_catalog.=) '0'::pg_catalog.text
-      AND pg_catalog.current_setting('log_error_verbosity') OPERATOR(pg_catalog.=) 'terse'::pg_catalog.text
-      AND COALESCE(pg_catalog.current_setting('pgaudit.log_parameter', true), 'off')
-        OPERATOR(pg_catalog.=) 'off'::pg_catalog.text
-      AND COALESCE(pg_catalog.current_setting('auto_explain.log_min_duration', true), '-1')
-        OPERATOR(pg_catalog.=) '-1'::pg_catalog.text
-      AS ok`,
+    SELECT pg_catalog.current_setting('log_statement') AS log_statement,
+      COALESCE(pg_catalog.current_setting('pgaudit.log', true), 'none') AS pgaudit_log,
+      COALESCE(pg_catalog.current_setting('pgaudit.log_parameter', true), 'off') AS pgaudit_log_parameter,
+      pg_catalog.current_setting('log_duration') AS log_duration,
+      pg_catalog.current_setting('log_transaction_sample_rate') AS log_transaction_sample_rate,
+      pg_catalog.current_setting('log_min_duration_sample') AS log_min_duration_sample,
+      pg_catalog.current_setting('log_min_error_statement') AS log_min_error_statement,
+      -- pg_settings.setting is the raw millisecond value; current_setting may
+      -- display the same 1000 ms as '1s'. Verify the unit rather than guessing.
+      (SELECT setting FROM pg_catalog.pg_settings
+        WHERE name OPERATOR(pg_catalog.=) 'log_min_duration_statement'::pg_catalog.text
+          AND unit OPERATOR(pg_catalog.=) 'ms'::pg_catalog.text) AS log_min_duration_statement,
+      COALESCE(pg_catalog.current_setting('auto_explain.log_min_duration', true), '-1')
+        AS auto_explain_log_min_duration`,
   prerequisites: `/* prerequisites */
     SELECT pg_catalog.has_schema_privilege('doadmin', 'public', 'CREATE')
       AND pg_catalog.has_schema_privilege('chargebridge_staging_runtime', 'public', 'USAGE')
@@ -180,8 +282,8 @@ const SQL = Object.freeze({
     environment pg_catalog.text NOT NULL UNIQUE
       CHECK (environment OPERATOR(pg_catalog.=) 'staging'::pg_catalog.text)
   )`,
-  insert: `INSERT INTO public.chargebridge_database_identity (identity_id, environment)
-    VALUES ($1::pg_catalog.uuid, 'staging'::pg_catalog.text)`,
+  copy: `COPY public.chargebridge_database_identity (identity_id, environment)
+    FROM STDIN WITH (FORMAT binary)`,
   revoke: `REVOKE ALL PRIVILEGES ON TABLE public.chargebridge_database_identity
     FROM PUBLIC, chargebridge_staging_runtime`,
   grant: `GRANT SELECT ON TABLE public.chargebridge_database_identity
@@ -211,10 +313,7 @@ const SQL = Object.freeze({
     FROM pg_catalog.pg_class c
     WHERE c.oid OPERATOR(pg_catalog.=) 'public.chargebridge_database_identity'::pg_catalog.regclass`,
   markerIdentity: `/* marker-identity */
-    SELECT pg_catalog.count(*) OPERATOR(pg_catalog.=) 1
-      AND COALESCE(pg_catalog.bool_and(
-        identity_id OPERATOR(pg_catalog.=) $1::pg_catalog.uuid
-        AND environment OPERATOR(pg_catalog.=) 'staging'::pg_catalog.text), false) AS ok
+    SELECT pg_catalog.uuid_send(identity_id) AS identity_bytes, environment
     FROM public.chargebridge_database_identity`,
   permissions: `/* effective-permissions */
     SELECT pg_catalog.has_table_privilege('chargebridge_staging_runtime',
@@ -266,10 +365,8 @@ export async function provisionDatabaseIdentity({
       password: inputs.password,
       ssl: { ca: config.ca, rejectUnauthorized: true, servername: config.host },
       // Explicit options supersede PGOPTIONS and ambient namespace defaults.
-      // TERSE suppresses backend DETAIL/HINT/QUERY/CONTEXT, NOT every possible
-      // primary message or third-party log. Lack of SET authority fails closed.
-      options: "-c search_path=pg_catalog -c log_parameter_max_length=0 " +
-        "-c log_parameter_max_length_on_error=0 -c log_error_verbosity=terse",
+      // No superuser-only logging options: managed doadmin cannot set them.
+      options: "-c search_path=pg_catalog",
       connectionTimeoutMillis: 5_000, query_timeout: 15_000,
       application_name: "chargebridge-staging-marker-provisioner",
     });
@@ -279,10 +376,17 @@ export async function provisionDatabaseIdentity({
         client.connection.stream.authorized !== true) {
       throw new Refusal("FAILED / TARGET REFUSED");
     }
-    const rawQuery = async (text, values) => {
+    const rawQuery = async (text) => {
       if (connectionFault) throw new Refusal("FAILED");
       if (text === "COMMIT") commitAttempted = true;
-      const response = await client.query(text, values);
+      const response = text === SQL.copy
+        ? await new Promise((resolveCopy, rejectCopy) => {
+          client.query(new BinaryIdentityCopy(inputs.identity, (error, copied) => {
+            if (error) rejectCopy(error);
+            else resolveCopy(copied);
+          }));
+        })
+        : await client.query(text);
       if (connectionFault) throw new Refusal("FAILED");
       return response;
     };
@@ -296,25 +400,26 @@ export async function provisionDatabaseIdentity({
     transaction = true;
     await rawQuery("SET LOCAL search_path = pg_catalog");
     await verifyNamespace();
-    const query = async (text, values) => {
+    const query = async (text) => {
       await verifyNamespace();
-      const mutatesMarker = [SQL.create, SQL.insert, SQL.revoke, SQL.grant].includes(text);
+      const mutatesMarker = [SQL.create, SQL.copy, SQL.revoke, SQL.grant].includes(text);
       if (mutatesMarker || text === "COMMIT") {
         requireTrue(await rawQuery(SQL.eventTriggers), "FAILED / SAFETY CHECK REFUSED");
       }
-      // Recheck suppression before every UUID-bearing query and all mutations.
-      if (values || mutatesMarker || text === "COMMIT") {
-        requireTrue(await rawQuery(SQL.logging), "FAILED / SAFETY CHECK REFUSED");
+      // Recheck the approved logger configuration, not parameter suppression.
+      const sensitive = mutatesMarker || text === SQL.markerIdentity || text === "COMMIT";
+      if (sensitive) {
+        requireLoggingSafety(await rawQuery(SQL.logging));
       }
-      if (mutatesMarker || values || text === "COMMIT") await verifyNamespace();
-      return rawQuery(text, values);
+      if (sensitive) await verifyNamespace();
+      return rawQuery(text);
     };
     await query("SET LOCAL lock_timeout = '5s'");
     await query("SET LOCAL statement_timeout = '10s'");
     await query("SET LOCAL idle_in_transaction_session_timeout = '15s'");
     requireTrue(await query(SQL.target), "FAILED / TARGET REFUSED");
     emit("TARGET VERIFIED");
-    requireTrue(await query(SQL.logging), "FAILED / SAFETY CHECK REFUSED");
+    requireLoggingSafety(await query(SQL.logging));
     requireTrue(await query(SQL.prerequisites), "FAILED / PROVISIONER REFUSED");
     requireTrue(await query(SQL.roleSafety), "FAILED / SAFETY CHECK REFUSED");
     requireTrue(await query(SQL.lock), "FAILED / CONCURRENT OPERATION REFUSED");
@@ -327,7 +432,7 @@ export async function provisionDatabaseIdentity({
     requireTrue(await query(SQL.target), "FAILED / PROVISIONER REFUSED");
     emit("PROVISIONER VERIFIED");
     await query(SQL.create); // Owned by the verified effective doadmin role.
-    const inserted = await query(SQL.insert, [inputs.identity]);
+    const inserted = await query(SQL.copy);
     if (inserted.rowCount !== 1) throw new Refusal("FAILED");
     await query(SQL.revoke);
     await query(SQL.grant);
@@ -336,7 +441,13 @@ export async function provisionDatabaseIdentity({
     requireTrue(await query(SQL.permissions), "FAILED");
     await query("SET LOCAL ROLE chargebridge_staging_runtime");
     requireTrue(await query(SQL.runtimeIdentity), "FAILED");
-    requireTrue(await query(SQL.markerIdentity, [inputs.identity]), "FAILED");
+    const marker = await query(SQL.markerIdentity);
+    const row = marker?.rows?.[0];
+    if (marker?.rows?.length !== 1 || row.environment !== "staging" ||
+        !Buffer.isBuffer(row.identity_bytes) ||
+        !row.identity_bytes.equals(Buffer.from(inputs.identity.replaceAll("-", ""), "hex"))) {
+      throw new Refusal("FAILED");
+    }
     requireTrue(await query(SQL.permissions), "FAILED");
     requireTrue(await query(SQL.roleSafety), "FAILED");
     await query("SET LOCAL ROLE doadmin");
