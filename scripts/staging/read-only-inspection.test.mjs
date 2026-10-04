@@ -12,12 +12,14 @@ import {
 // Fictitious, isolated inputs. Never process.env, a real Client, or a live socket.
 const ID = "12345678-1234-1234-1234-123456789abc";
 const PASSWORD = "FAKE-INSPECTION-PASSWORD";
+const CA = "-----BEGIN CERTIFICATE-----\nFAKE-INSPECTION-CA\n-----END CERTIFICATE-----";
 const ENV = Object.freeze({
   CHARGEBRIDGE_ENVIRONMENT: "staging",
   CHARGEBRIDGE_STAGING_DB_ROLE: "chargebridge_staging_runtime",
   CHARGEBRIDGE_STAGING_DB_HOST: "staging.example.invalid",
   CHARGEBRIDGE_STAGING_DB_PORT: "25060",
   CHARGEBRIDGE_STAGING_DB_ID: ID,
+  STAGING_DB_CA_CERT: CA,
   DATABASE_URL: `postgres://chargebridge_staging_runtime:${PASSWORD}@staging.example.invalid:25060/chargebridge_staging?sslmode=verify-full`,
 });
 const validators = { stagingVerifiedTlsConnection, verifyStagingDatabaseIdentity };
@@ -26,7 +28,7 @@ async function exercise({ sql = [], env = ENV, failure, marker, markerStructure,
   let output = "", options, factories = 0;
   const calls = [];
   const client = new EventEmitter();
-  client.connect = async () => { calls.push("CONNECT"); if (failure === "CONNECT") throw new Error(ENV.DATABASE_URL); };
+  client.connect = async () => { calls.push("CONNECT"); if (failure === "CONNECT") throw new Error(`${ENV.DATABASE_URL} ${env.STAGING_DB_CA_CERT ?? ""}`); };
   client.end = async () => { calls.push("END"); if (failure === "END") throw new Error(ID); };
   client.query = async (text, values) => {
     calls.push(text);
@@ -178,6 +180,7 @@ test("startup uses the real existing validators, verified TLS and startup read-o
   assert.equal(r.code, 0);
   assert.equal(r.options.ssl.rejectUnauthorized, true);
   assert.equal(r.options.ssl.servername, ENV.CHARGEBRIDGE_STAGING_DB_HOST);
+  assert.equal(r.options.ssl.ca, CA);
   assert.equal(new URL(r.options.connectionString).searchParams.has("sslmode"), false);
   assert.match(r.options.options, /default_transaction_read_only=on/);
   assert.match(r.options.options, /search_path=pg_catalog/);
@@ -260,7 +263,7 @@ for (const kind of ["v", "m", "f", null]) test("data SELECT rejects nonordinary/
 });
 
 test("result output and thrown errors do not expose secrets", async () => {
-  const secrets = [ID, PASSWORD, ENV.DATABASE_URL];
+  const secrets = [ID, PASSWORD, ENV.DATABASE_URL, CA];
   const r = await exercise({ rows: [{ value: secrets.join(" ") }], sql: ["SELECT pg_catalog.current_database();", "\\run"] });
   assert.equal(r.code, 0);
   for (const secret of secrets) assert.equal(r.output.includes(secret), false);
@@ -270,6 +273,20 @@ test("result output and thrown errors do not expose secrets", async () => {
     for (const secret of secrets) assert.equal(f.output.includes(secret), false);
     assert.ok(f.calls.includes("END"));
   }
+});
+
+test("configured CA is not logged during success or a TLS connection failure", async t => {
+  const logs = [];
+  for (const method of ["log", "error", "warn", "info", "debug"])
+    t.mock.method(console, method, (...args) => { logs.push(args); });
+  const success = await exercise();
+  const failure = await exercise({ failure: "CONNECT" });
+  assert.equal(success.code, 0);
+  assert.equal(failure.code, 1);
+  assert.equal(success.output.includes(CA), false);
+  assert.equal(failure.output, "STOP: inspection refused or failed; details suppressed. Session closed.\n");
+  assert.deepEqual(failure.calls, ["CONNECT", "END"]);
+  assert.equal(logs.length, 0);
 });
 
 test("certificates, UUIDs, tokens and encoded passwords are redacted", () => {

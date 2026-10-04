@@ -50,7 +50,7 @@ export function stagingVerifiedTlsConnection(env: NodeJS.ProcessEnv) {
   url.searchParams.delete("sslmode");
   return {
     connectionString: url.toString(),
-    ssl: { rejectUnauthorized: true, servername: target.host },
+    ssl: { rejectUnauthorized: true, servername: target.host, ca: env.STAGING_DB_CA_CERT },
   };
 }
 
