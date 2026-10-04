@@ -119,6 +119,7 @@ const duplicateSummary = `SELECT count(*) AS duplicate_groups,
     WHERE payment_creation_request_id IS NOT NULL
     GROUP BY payment_creation_request_id HAVING count(*) > 1) duplicates`;
 const EXACT_DATA = new Set([markerSummary, associationSummary, duplicateSummary,
+  "SELECT identity_id, environment FROM public.chargebridge_database_identity",
   "SELECT key, label, platform, location, description, enabled FROM public.button_configs ORDER BY key",
   "SELECT migration_id, filename, sha256, execution_order, mode, target_environment, completed_at FROM public.chargebridge_staging_migration_ledger ORDER BY execution_order",
 ].map(canonical));
