@@ -190,10 +190,18 @@ export async function verifyStagingSchemaCatalogForTests(query: ReadOnlyQuery): 
   }
 
   const receipts = await query(`SELECT migration_id, filename, sha256, execution_order,
-      mode, target_environment, completed_at
+      mode, target_environment, completed_at, receipt_kind
     FROM public.chargebridge_staging_migration_ledger ORDER BY execution_order`);
   if (receipts.rows.length !== expectedReceipts.length) {
     throw new Error("Staging schema readiness: migration evidence is incomplete or unexpected");
+  }
+  const adopted = receipts.rows.filter((row) => row.receipt_kind === "verified_adopted");
+  if (receipts.rows.some((row) => row.receipt_kind !== "executed" && row.receipt_kind !== "verified_adopted") ||
+      (adopted.length !== 0 && !(adopted.length === 2 &&
+        receipts.rows[0].receipt_kind === "verified_adopted" &&
+        receipts.rows[1].receipt_kind === "verified_adopted" &&
+        receipts.rows.slice(2).every((row) => row.receipt_kind === "executed")))) {
+    throw new Error("Staging schema readiness: invalid migration receipt provenance");
   }
   for (const [index, expected] of expectedReceipts.entries()) {
     const actual = receipts.rows[index];
